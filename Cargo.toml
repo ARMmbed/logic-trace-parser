@@ -1,0 +1,8 @@
+[package]
+name = "spif-parser"
+version = "0.1.0"
+authors = ["Wilfried Chauveau <wilfried.chauveau@arm.com>"]
+edition = "2018"
+
+[dependencies]
+nom = "4.2.0"
