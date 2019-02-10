@@ -4,4 +4,4 @@ This tool parses an export from Saleae Logic software and tries to interpret it 
 
 ## How to use :
 
-`cat trace.csv | cargo run`
+`bat trace_sample_on_change.bin | cargo run --color=always 2>&1 | rg -v '(StatusRegister|WriteEnable)' | less`

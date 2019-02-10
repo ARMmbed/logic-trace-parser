@@ -140,7 +140,6 @@ where
 {
     cs: bool,
     idx: u32,
-    prev_ts: f32,
     partial: PartialCommand,
 
     cbk: F,
@@ -153,7 +152,6 @@ where
         Self {
             cs: false,
             idx: 0,
-            prev_ts: 0.,
             partial: PartialCommand::None,
             cbk: cbk,
         }
@@ -232,10 +230,7 @@ where
                 }
                 Ok(())
             }
-            SpiEvent::Data {
-                mosi: mosi,
-                miso: miso,
-            } if !self.cs => match self.partial {
+            SpiEvent::Data { mosi, miso } if !self.cs => match self.partial {
                 PartialCommand::None => match self.new_cmd(ts, mosi, miso) {
                     Ok(Some(cmd)) => {
                         (self.cbk)(ts, cmd);
