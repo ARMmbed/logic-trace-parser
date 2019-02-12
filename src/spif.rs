@@ -134,26 +134,17 @@ enum PartialCommand {
     ReadDeviceId(f32, DeviceId),
     None,
 }
-pub struct Spif<F>
-where
-    F: FnMut(f32, Command),
-{
+pub struct Spif {
     cs: bool,
     idx: u32,
     partial: PartialCommand,
-
-    cbk: F,
 }
-impl<F> Spif<F>
-where
-    F: FnMut(f32, Command),
-{
-    pub fn new(cbk: F) -> Self {
+impl Spif {
+    pub fn new() -> Self {
         Self {
             cs: false,
             idx: 0,
             partial: PartialCommand::None,
-            cbk: cbk,
         }
     }
     fn new_cmd(&mut self, ts: f32, mosi: u8, miso: u8) -> Result<Option<Command>, String> {
@@ -201,15 +192,15 @@ where
                 Ok(None)
             }
 
-            _ => Err(format!("{:.6}: Unsupported cmd {:x}-{:x}", ts, mosi, miso)),
+            _ => Err(format!("{:.6} Unsupported cmd {:x}-{:x}", ts, mosi, miso)),
         }
     }
 
-    pub fn update(&mut self, ts: f32, ev: SpiEvent) -> Result<(), String> {
+    pub fn update(&mut self, ts: f32, ev: SpiEvent) -> Result<Option<(f32, Command)>, String> {
         match ev {
             SpiEvent::ChipSelect(false) => {
                 self.cs = false;
-                Ok(())
+                Ok(None)
             }
             SpiEvent::ChipSelect(true) => {
                 self.cs = true;
@@ -217,26 +208,18 @@ where
                 let mut partial = PartialCommand::None;
                 std::mem::swap(&mut partial, &mut self.partial);
                 match partial {
-                    PartialCommand::Read(sts, r) => {
-                        (self.cbk)(sts, Command::Read(r));
-                    }
+                    PartialCommand::Read(sts, r) => Ok(Some((sts, Command::Read(r)))),
                     PartialCommand::PageProgram(sts, pp) => {
-                        (self.cbk)(sts, Command::PageProgram(pp));
+                        Ok(Some((sts, Command::PageProgram(pp))))
                     }
-                    PartialCommand::ReadSFDP(sts, sfdp) => {
-                        (self.cbk)(sts, Command::ReadSFDP(sfdp));
-                    }
-                    _ => {}
+                    PartialCommand::ReadSFDP(sts, sfdp) => Ok(Some((sts, Command::ReadSFDP(sfdp)))),
+                    _ => Ok(None),
                 }
-                Ok(())
             }
             SpiEvent::Data { mosi, miso } if !self.cs => match self.partial {
                 PartialCommand::None => match self.new_cmd(ts, mosi, miso) {
-                    Ok(Some(cmd)) => {
-                        (self.cbk)(ts, cmd);
-                        Ok(())
-                    }
-                    Ok(None) => Ok(()),
+                    Ok(Some(cmd)) => Ok(Some((ts, cmd))),
+                    Ok(None) => Ok(None),
                     Err(msg) => Err(msg),
                 },
                 PartialCommand::Read(_, ref mut r) => {
@@ -246,42 +229,47 @@ where
                     } else {
                         r.data.push(miso);
                     }
-                    Ok(())
+                    Ok(None)
                 }
                 PartialCommand::ReadStatusRegister(sts) => {
                     self.partial = PartialCommand::None;
-                    (self.cbk)(sts, Command::ReadStatusRegister(StatusRegister(miso)));
-                    Ok(())
+                    Ok(Some((
+                        sts,
+                        Command::ReadStatusRegister(StatusRegister(miso)),
+                    )))
                 }
                 PartialCommand::BlockErase(ref sts, ref mut addr) => {
+                    let mut res = None;
                     if self.idx < 2 {
                         *addr = (*addr << 8) | (mosi as u32);
                         self.idx += 1;
                     } else {
-                        (self.cbk)(*sts, Command::BlockErase((*addr << 8) | (mosi as u32)));
+                        res = Some((*sts, Command::BlockErase((*addr << 8) | (mosi as u32))));
                         self.partial = PartialCommand::None;
                     }
-                    Ok(())
+                    Ok(res)
                 }
                 PartialCommand::BlockErase32(ref sts, ref mut addr) => {
+                    let mut res = None;
                     if self.idx < 2 {
                         *addr = (*addr << 8) | (mosi as u32);
                         self.idx += 1;
                     } else {
-                        (self.cbk)(*sts, Command::BlockErase32((*addr << 8) | (mosi as u32)));
+                        res = Some((*sts, Command::BlockErase32((*addr << 8) | (mosi as u32))));
                         self.partial = PartialCommand::None;
                     }
-                    Ok(())
+                    Ok(res)
                 }
                 PartialCommand::SectorErase(ref sts, ref mut addr) => {
+                    let mut res = None;
                     if self.idx < 2 {
                         *addr = (*addr << 8) | (mosi as u32);
                         self.idx += 1;
                     } else {
-                        (self.cbk)(*sts, Command::SectorErase((*addr << 8) | (mosi as u32)));
+                        res = Some((*sts, Command::SectorErase((*addr << 8) | (mosi as u32))));
                         self.partial = PartialCommand::None;
                     }
-                    Ok(())
+                    Ok(res)
                 }
                 PartialCommand::PageProgram(_, ref mut pp) => {
                     if self.idx < 3 {
@@ -289,11 +277,8 @@ where
                         self.idx += 1;
                     } else {
                         pp.data.push(mosi);
-                        if miso != 0 {
-                            eprintln!("Warning: {:.6} miso({:02x}) != 0", ts, miso);
-                        }
                     }
-                    Ok(())
+                    Ok(None)
                 }
                 PartialCommand::ReadSFDP(_, ref mut sfdp) => {
                     if self.idx < 3 {
@@ -302,9 +287,10 @@ where
                     } else {
                         sfdp.data.push(miso);
                     }
-                    Ok(())
+                    Ok(None)
                 }
                 PartialCommand::ReadDeviceId(ref sts, ref mut rdid) => {
+                    let mut res = None;
                     match self.idx {
                         0 => {
                             rdid.manufacturer = miso;
@@ -316,12 +302,12 @@ where
                         }
                         2 => {
                             rdid.device_id |= miso as u16;
-                            (self.cbk)(*sts, Command::ReadDeviceId(*rdid));
+                            res = Some((*sts, Command::ReadDeviceId(*rdid)));
                             self.partial = PartialCommand::None;
                         }
                         _ => unreachable!(),
                     }
-                    Ok(())
+                    Ok(res)
                 }
             },
             _ => Err(format!("Ignoring event: {:?} at {:.6}", ev, ts)),

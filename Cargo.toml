@@ -6,3 +6,4 @@ edition = "2018"
 
 [dependencies]
 nom = "4.2.0"
+clap = "2.32"
