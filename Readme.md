@@ -7,7 +7,7 @@ Wilfried Chauveau <wilfried.chauveau@arm.com>
 
 
 USAGE:
-    spif-parser [FLAGS] [OPTIONS]
+    spif-parser [FLAGS] [OPTIONS] [file]
 
 FLAGS:
     -h, --help       Prints help information
@@ -22,7 +22,10 @@ OPTIONS:
         --miso <miso>                          Channel used for miso [default: 1]
     -m, --mode <mode>                          Spi mode [default: 0]  [possible values: 0, 1, 2, 3]
         --mosi <mosi>                          Channel used for mosi [default: 2]
+
+ARGS:
+    <file>    Input file. If not provided, stdin will be used.
 ```
 ## How to use :
 
-`bat trace_sample_on_change.bin | cargo run --color=always 2>&1 | rg -v '(StatusRegister|WriteEnable)' | less`
+`spif-parser trace_sample_on_change.bin | rg -v '(StatusRegister|WriteEnable)' | less`

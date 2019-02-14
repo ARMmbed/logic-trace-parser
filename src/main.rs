@@ -13,7 +13,7 @@ mod spif;
 use logic_sample::SampleIterator;
 use spi::{Phase, Polarity, SpiBuilder};
 use spif::Spif;
-use std::io::stdin;
+use std::io::{stdin, Read};
 
 fn main() {
     let matches = App::new(crate_name!())
@@ -36,6 +36,7 @@ fn main() {
                 .short("v")
                 .multiple(true)
                 .help("Sets the level of verbosity"),
+            Arg::with_name("file").help("Input file. If not provided, stdin will be used."),
         ])
         .get_matches();
 
@@ -46,8 +47,15 @@ fn main() {
     if freq == 0. {
         freq = 1.;
     }
-    let stdin = stdin();
-    let it = SampleIterator::new(stdin.lock(), freq);
+    let input: Box<Read> = if let Some(path) = matches.value_of("file") {
+        Box::new(std::fs::File::open(path).unwrap_or_else(|e| {
+            clap::Error::with_description(&format!("{:?}", e), clap::ErrorKind::ValueValidation)
+                .exit()
+        }))
+    } else {
+        Box::new(stdin())
+    };
+    let it = SampleIterator::new(input, freq);
     let (phase, polarity) = match value_t_or_exit!(matches, "mode", u8) {
         1 => (Phase::SecondEdge, Polarity::High),
         2 => (Phase::FirstEdge, Polarity::Low),
