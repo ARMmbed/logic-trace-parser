@@ -1,4 +1,6 @@
-use crate::spi::SpiEvent;
+use crate::sample::SampleIterator;
+use crate::spi::{self, SpiEvent};
+use clap::{App, ArgMatches, SubCommand};
 use std::fmt;
 
 struct DebugVec<'a>(&'a Vec<u8>);
@@ -124,30 +126,33 @@ impl fmt::Debug for Command {
 }
 
 enum PartialCommand {
-    Read(f32, Read),
-    ReadStatusRegister(f32),
-    PageProgram(f32, PageProgram),
-    BlockErase(f32, u32),
-    BlockErase32(f32, u32),
-    SectorErase(f32, u32),
-    ReadSFDP(f32, SFDP),
-    ReadDeviceId(f32, DeviceId),
+    Read(f64, Read),
+    ReadStatusRegister(f64),
+    PageProgram(f64, PageProgram),
+    BlockErase(f64, u32),
+    BlockErase32(f64, u32),
+    SectorErase(f64, u32),
+    ReadSFDP(f64, SFDP),
+    ReadDeviceId(f64, DeviceId),
     None,
 }
-pub struct Spif {
+pub struct Spif<T>
+where
+    T: Iterator<Item = (f64, SpiEvent)>,
+{
+    it: T,
+    inspect: bool,
+
     cs: bool,
     idx: u32,
     partial: PartialCommand,
 }
-impl Spif {
-    pub fn new() -> Self {
-        Self {
-            cs: false,
-            idx: 0,
-            partial: PartialCommand::None,
-        }
-    }
-    fn new_cmd(&mut self, ts: f32, mosi: u8, miso: u8) -> Result<Option<Command>, String> {
+
+impl<T> Spif<T>
+where
+    T: Iterator<Item = (f64, SpiEvent)>,
+{
+    fn new_cmd(&mut self, ts: f64, mosi: u8, miso: u8) -> Result<Option<Command>, String> {
         self.idx = 0;
         match mosi {
             0x02 => {
@@ -196,7 +201,7 @@ impl Spif {
         }
     }
 
-    pub fn update(&mut self, ts: f32, ev: SpiEvent) -> Result<Option<(f32, Command)>, String> {
+    fn update(&mut self, ts: f64, ev: SpiEvent) -> Result<Option<(f64, Command)>, String> {
         match ev {
             SpiEvent::ChipSelect(false) => {
                 self.cs = false;
@@ -313,4 +318,53 @@ impl Spif {
             _ => Err(format!("Ignoring event: {:?} at {:.6}", ev, ts)),
         }
     }
+}
+
+impl<T> Iterator for Spif<T>
+where
+    T: Iterator<Item = (f64, SpiEvent)>,
+{
+    type Item = Result<(f64, Command), String>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some((ts, ev)) = self.it.next() {
+            match self.update(ts, ev) {
+                Ok(None) => {}
+                Ok(Some((ts, cmd))) => {
+                    if self.inspect {
+                        println!("{:.6} {:?}", ts, cmd);
+                    }
+                    return Some(Ok((ts, cmd)));
+                }
+                Err(msg) => {
+                    return Some(Err(msg));
+                }
+            }
+        }
+        None
+    }
+}
+
+impl<T> Spif<spi::Spi<SampleIterator<T>>>
+where
+    T: 'static + std::io::Read,
+{
+    pub fn new<'a>(
+        input: T,
+        matches: &ArgMatches<'a>,
+        depth: u64,
+    ) -> Spif<spi::Spi<SampleIterator<T>>> {
+        let inspect = matches.occurrences_of("v") >= depth;
+        let it = spi::Spi::new(input, &matches, depth + 1);
+        Self {
+            it,
+            inspect,
+            cs: false,
+            idx: 0,
+            partial: PartialCommand::None,
+        }
+    }
+}
+pub fn subcommand() -> App<'static, 'static> {
+    SubCommand::with_name("spif").args(&spi::args())
 }
