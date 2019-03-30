@@ -1,4 +1,7 @@
 /target
 **/*.rs.bk
+**/*.swp
+**/*.swo
 *.bin
 *.vcd
+*.logicdata
