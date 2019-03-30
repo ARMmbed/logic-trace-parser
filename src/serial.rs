@@ -1,16 +1,16 @@
 use crate::sample::{Sample, SampleIterator};
 use clap::{App, Arg, ArgMatches, SubCommand};
-use std::collections::VecDeque;
 use std::fmt;
 use std::str::FromStr;
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub enum SerialEvent {
     Rx(u8),
     Tx(u8),
     Cts(bool),
     Rts(bool),
-    Error(SerialError),
+    TxError(SerialError),
+    RxError(SerialError),
 }
 impl fmt::Debug for SerialEvent {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -19,7 +19,16 @@ impl fmt::Debug for SerialEvent {
             SerialEvent::Tx(v) => write!(f, "Tx({:?})", v as char),
             SerialEvent::Cts(b) => write!(f, "Cts({})", b),
             SerialEvent::Rts(b) => write!(f, "Rts({})", b),
-            SerialEvent::Error(e) => write!(f, "Error({:?})", e),
+            SerialEvent::RxError(e) => write!(f, "RxError({:?})", e),
+            SerialEvent::TxError(e) => write!(f, "TxError({:?})", e),
+        }
+    }
+}
+impl SerialEvent {
+    pub fn is_error(&self) -> bool {
+        match self {
+            SerialEvent::RxError(_) | SerialEvent::TxError(_) => true,
+            _ => false,
         }
     }
 }
@@ -29,8 +38,6 @@ pub enum SerialError {
     Framing,
     /// Generated when a parity error is detected
     Parity,
-    /// Generated when data have been transmitted while flow control is expected to prevent it.
-    FlowControl,
 }
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Parity {
@@ -57,7 +64,7 @@ impl FromStr for Parity {
         }
     }
 }
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 enum MonitorState {
     Idle,
     Start,
@@ -68,12 +75,13 @@ enum MonitorState {
 struct Monitor {
     prefix: &'static str,
     state: MonitorState,
-    last_ts: f64,
-    last_v: bool,
+    ts: f64,
+    data: bool,
     last_fc: bool,
     bit_duration: f64,
     parity: Parity,
     on_data: &'static Fn(u8) -> SerialEvent,
+    on_err: &'static Fn(SerialError) -> SerialEvent,
     on_fc: &'static Fn(bool) -> SerialEvent,
 }
 impl Monitor {
@@ -82,76 +90,88 @@ impl Monitor {
         baud: f64,
         parity: Parity,
         on_data: &'static Fn(u8) -> SerialEvent,
+        on_err: &'static Fn(SerialError) -> SerialEvent,
         on_fc: &'static Fn(bool) -> SerialEvent,
     ) -> Self {
         Monitor {
             prefix,
             state: MonitorState::Idle,
-            last_ts: -0.1,
-            last_v: false,
+            ts: -0.1,
+            data: true,
             last_fc: false,
             bit_duration: 1. / baud,
             parity,
             on_data,
+            on_err,
             on_fc,
         }
     }
-    fn update(&mut self, ts: f64, data: bool, fc: bool) -> Vec<(f64, SerialEvent)> {
-        let mut res = Vec::new();
+    fn update(&mut self, ts: f64, data: bool, fc: bool) -> [Option<(f64, SerialEvent)>; 2] {
+        let mut res = [None, None];
         if self.last_fc != fc {
             self.last_fc = fc;
-            res.push((ts, (self.on_fc)(fc)));
+            res[1] = Some((ts, (self.on_fc)(fc)));
         }
-        if self.last_v != data {
-            //let symbol_len = 9 + if self.parity != Parity::None { 1 } else { 0 };
-            let fbits = (ts - self.last_ts) / self.bit_duration;
-            let mut bits = fbits.round() as u32;
-            let mut new_ts = self.last_ts;
-            while bits > 0 {
-                let new_state = match self.state {
-                    MonitorState::Idle if !self.last_v => MonitorState::Start,
-                    MonitorState::Idle => {
-                        // previous idle state was wrong
-                        MonitorState::Idle
+
+        while self.ts < ts {
+            let (new_ts, new_state) = match self.state {
+                MonitorState::Idle if !data => (ts, MonitorState::Start),
+                MonitorState::Idle => (ts, MonitorState::Idle),
+                MonitorState::Start if (self.ts + self.bit_duration * 1.5) < ts => (
+                    self.ts + self.bit_duration * 1.5,
+                    MonitorState::Data(if self.data { 0x80 } else { 0 }, 1),
+                ),
+                MonitorState::Data(mut reg, mut shift) if (self.ts + self.bit_duration) < ts => {
+                    shift += 1;
+                    reg >>= 1;
+                    if self.data {
+                        reg |= 0x80;
                     }
-                    MonitorState::Start => {
-                        MonitorState::Data(if self.last_v { 0x80 } else { 0 }, 1)
-                    }
-                    MonitorState::Data(mut reg, shift) => {
-                        reg >>= 1;
-                        if self.last_v {
-                            reg |= 0x80;
-                        }
-                        if (shift + 1) == 8 {
+                    (
+                        self.ts + self.bit_duration,
+                        if shift == 8 {
                             if self.parity != Parity::None {
                                 MonitorState::Parity(reg)
                             } else {
                                 MonitorState::Stop(reg)
                             }
                         } else {
-                            MonitorState::Data(reg, shift + 1)
-                        }
+                            MonitorState::Data(reg, shift)
+                        },
+                    )
+                }
+                MonitorState::Parity(_) => unimplemented!(),
+                MonitorState::Stop(reg) if (self.ts + self.bit_duration) < ts => {
+                    if !self.data {
+                        res[0] = Some((self.ts, (self.on_err)(SerialError::Framing)));
+                    } else {
+                        res[0] = Some((self.ts, (self.on_data)(reg)));
                     }
-                    MonitorState::Parity(reg) => unimplemented!(),
-                    MonitorState::Stop(reg) => {
-                        if !self.last_v {
-                            res.push((new_ts, SerialEvent::Error(SerialError::Framing)));
-                        } else {
-                            res.push((new_ts, (self.on_data)(reg)));
-                        }
-                        MonitorState::Idle
-                    }
-                };
-                bits -= 1;
-                self.state = new_state;
-                new_ts += self.bit_duration;
-                if self.state == MonitorState::Idle {
+                    (self.ts + self.bit_duration, MonitorState::Idle)
+                }
+                _ => {
                     break;
                 }
-            }
-            self.last_ts = ts;
-            self.last_v = data;
+            };
+            /*println!(
+                "{}: {:.6} {:?} {}-> {:?} ({:.6})",
+                self.prefix, self.ts, self.state, self.data, new_state, new_ts
+            );*/
+            self.state = new_state;
+            self.ts = new_ts;
         }
+        self.data = data;
+        res
+    }
+    fn finalize(&mut self) -> Option<(f64, SerialEvent)> {
+        let res = match self.state {
+            MonitorState::Idle => None,
+            MonitorState::Start | MonitorState::Data(_, _) | MonitorState::Parity(_) => {
+                Some((self.ts, (self.on_err)(SerialError::Framing)))
+            }
+            MonitorState::Stop(byte) => Some((self.ts, (self.on_data)(byte))),
+        };
+        self.state = MonitorState::Idle;
         res
     }
 }
@@ -161,8 +181,7 @@ where
     T: Iterator<Item = Sample>,
 {
     it: T,
-    prev_sample: u8,
-    pending_event: VecDeque<(f64, SerialEvent)>,
+    pending_event: Vec<(f64, SerialEvent)>,
     inspect: bool,
 
     // Monitor Rx + RTS
@@ -182,35 +201,47 @@ where
     type Item = (f64, SerialEvent);
     fn next(&mut self) -> Option<Self::Item> {
         let ret = if self.pending_event.len() > 0 {
-            self.pending_event.pop_front()
+            self.pending_event.pop()
         } else {
             while let Some(smp) = self.it.next() {
                 let ts = smp.timestamp();
-                let change = smp.sample() ^ self.prev_sample;
-                self.prev_sample = smp.sample();
-                if ((change & self.rx_mask) == self.rx_mask)
-                    || (((change & self.rts_mask) == self.rts_mask) && self.rts_mask != 0)
-                {
-                    self.pending_event.extend(self.rx.update(
-                        ts,
-                        (smp.sample() & self.rx_mask) == self.rx_mask,
-                        (smp.sample() & self.rts_mask) == self.rts_mask,
-                    ));
-                }
-                if ((change & self.tx_mask) == self.tx_mask)
-                    || (((change & self.cts_mask) == self.cts_mask) && self.cts_mask != 0)
-                {
-                    self.pending_event.extend(self.tx.update(
-                        ts,
-                        (smp.sample() & self.tx_mask) == self.tx_mask,
-                        (smp.sample() & self.cts_mask) == self.cts_mask,
-                    ));
-                }
+                let smp = smp.sample();
+
+                self.pending_event.extend(
+                    self.rx
+                        .update(
+                            ts,
+                            (smp & self.rx_mask) == self.rx_mask,
+                            (smp & self.rts_mask) == self.rts_mask,
+                        )
+                        .iter()
+                        .flatten(),
+                );
+                self.pending_event.extend(
+                    self.tx
+                        .update(
+                            ts,
+                            (smp & self.tx_mask) == self.tx_mask,
+                            (smp & self.cts_mask) == self.cts_mask,
+                        )
+                        .iter()
+                        .flatten(),
+                );
                 if self.pending_event.len() > 0 {
                     break;
                 }
             }
-            self.pending_event.pop_front()
+            if self.pending_event.len() == 0 {
+                if let Some(tx) = self.tx.finalize() {
+                    self.pending_event.push(tx);
+                }
+                if let Some(rx) = self.rx.finalize() {
+                    self.pending_event.push(rx);
+                }
+            }
+            self.pending_event
+                .sort_unstable_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+            self.pending_event.pop()
         };
         if self.inspect {
             if let Some((ref ts, ref ev)) = ret {
@@ -219,20 +250,6 @@ where
         }
         ret
     }
-}
-
-pub fn args() -> [Arg<'static, 'static>; 7] {
-    [
-        Arg::from_usage("--tx [tx] 'Channel used for the tx pin'").default_value("0"),
-        Arg::from_usage("--rx [rx] 'Channel used for the rx pin'").default_value("1"),
-        Arg::from_usage("--rts [rts] 'Channel used for the rts pin'"),
-        Arg::from_usage("--cts [cts] 'Channel used for the cts pin'"),
-        Arg::from_usage("-b --baud [baudrate] 'Serial line baudrate'").default_value("auto"),
-        Arg::from_usage("-p --parity [parity] 'Serial line parity'")
-            .possible_values(&["even", "odd", "clear", "set", "none"])
-            .default_value("none"),
-        Arg::from_usage("-s --stop [stop] 'Serial line stop bit length'").default_value("1"),
-    ]
 }
 
 impl<T> Serial<SampleIterator<T>>
@@ -289,7 +306,91 @@ where
 
         Serial {
             it: SampleIterator::new(input, matches, depth + 1),
-            prev_sample: 0,
+            pending_event: Vec::with_capacity(4),
+            inspect,
+            rx_mask,
+            rts_mask,
+            rx: Monitor::new(
+                "rx",
+                baud,
+                parity,
+                &SerialEvent::Rx,
+                &SerialEvent::RxError,
+                &SerialEvent::Rts,
+            ),
+            tx_mask,
+            cts_mask,
+            tx: Monitor::new(
+                "tx",
+                baud,
+                parity,
+                &SerialEvent::Tx,
+                &SerialEvent::TxError,
+                &SerialEvent::Cts,
+            ),
+        }
+    }
+    /*
+    pub fn new_with_options<'a>(
+        input: T,
+        matches: &ArgMatches<'a>,
+        depth: u64,
+        rx: Option<u8>,
+        rts: Option<u8>,
+        rx: Option<u8>,
+        cts: Option<u8>,
+        baud: Option<f64>,
+        parity: Option<Parity>,
+    ) -> Serial<SampleIterator<T>> {
+        let inspect = matches.occurrences_of("v") >= depth;
+
+        let tx_mask = 1 << tx.unwrap_or_else(|_| value_t!(matches, "tx", u8).unwrap_or_else(|e| e.exit()));
+        let rx_mask = 1 << rx.unwrap_or_else(|_| value_t!(matches, "rx", u8).unwrap_or_else(|e| e.exit()));
+        let rts_mask = if let Some(v) = matches.value_of("rts") {
+            match v.parse::<u8>() {
+                Ok(val) => 1 << val,
+                Err(_) => ::clap::Error::value_validation_auto(
+                    "the argument 'rts' isn't a valid value".to_string(),
+                )
+                .exit(),
+            }
+        } else {
+            0
+        };
+        let cts_mask = if let Some(v) = matches.value_of("cts") {
+            match v.parse::<u8>() {
+                Ok(val) => 1 << val,
+                Err(_) => ::clap::Error::value_validation_auto(
+                    "the argument 'cts' isn't a valid value".to_string(),
+                )
+                .exit(),
+            }
+        } else {
+            0
+        };
+        let baud = if let Some(baud) = matches.value_of("baud") {
+            if baud == "auto" {
+                ::clap::Error::with_description(
+                    "Auto baudrate detection not yet implemented",
+                    ::clap::ErrorKind::ValueValidation,
+                )
+                .exit();
+            } else {
+                match baud.parse::<u32>() {
+                    Ok(val) => val as f64,
+                    Err(_) => ::clap::Error::value_validation_auto(
+                        "the argument 'baud' isn't a valid value".to_string(),
+                    )
+                    .exit(),
+                }
+            }
+        } else {
+            unreachable!();
+        };
+        let parity = value_t!(matches, "parity", Parity).unwrap_or_else(|e| e.exit());
+
+        Serial {
+            it: SampleIterator::new(input, matches, depth + 1),
             pending_event: VecDeque::new(),
             inspect,
             rx_mask,
@@ -299,8 +400,23 @@ where
             cts_mask,
             tx: Monitor::new("tx", baud, parity, &SerialEvent::Tx, &SerialEvent::Cts),
         }
-    }
+    }*/
 }
+
+pub fn args() -> [Arg<'static, 'static>; 7] {
+    [
+        Arg::from_usage("--tx [tx] 'Channel used for the tx pin'").default_value("0"),
+        Arg::from_usage("--rx [rx] 'Channel used for the rx pin'").default_value("1"),
+        Arg::from_usage("--rts [rts] 'Channel used for the rts pin'"),
+        Arg::from_usage("--cts [cts] 'Channel used for the cts pin'"),
+        Arg::from_usage("-b --baud [baudrate] 'Serial line baudrate'").default_value("auto"),
+        Arg::from_usage("-p --parity [parity] 'Serial line parity'")
+            .possible_values(&["even", "odd", "clear", "set", "none"])
+            .default_value("none"),
+        Arg::from_usage("-s --stop [stop] 'Serial line stop bit length'").default_value("1"),
+    ]
+}
+
 pub fn subcommand() -> App<'static, 'static> {
     SubCommand::with_name("serial").args(&args())
 }
