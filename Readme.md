@@ -1,31 +1,31 @@
-# SPIF-Parser
+# Logic trace parser
 
-This tool parses an export from Saleae Logic software and tries to interpret it as a SPIF communication.
+This tool parses an export from Saleae Logic software and tries to interpret it as a the selected communication.
 ```
-spif-parser 0.1.0
+logic-trace-parser 0.1.1
 Wilfried Chauveau <wilfried.chauveau@arm.com>
 
 
 USAGE:
-    spif-parser [FLAGS] [OPTIONS] [file]
-
-FLAGS:
-    -h, --help       Prints help information
-    -v               Sets the level of verbosity
-    -V, --version    Prints version information
+    logic-trace-parser [OPTIONS] [file] [SUBCOMMAND]
 
 OPTIONS:
-        --clk <clk>                            Channel used for the clock [default: 3]
-        --cs <cs>                              Channel used for the chip select. [default: 0]
-    -l, --cs_active_level <cs_active_level>    Chip select active level [default: Low]  [possible values: High, Low]
-    -f, --freq <freq>                          Sample frequency [default: 1.]
-        --miso <miso>                          Channel used for miso [default: 1]
-    -m, --mode <mode>                          Spi mode [default: 0]  [possible values: 0, 1, 2, 3]
-        --mosi <mosi>                          Channel used for mosi [default: 2]
+    -f, --freq <freq>    Sample frequency (only used on binary input) [default: 1.]
+    -h, --help           Prints help information
+    -v                   Sets the level of verbosity
+        --vcd            Input is a vcd file
+    -V, --version        Prints version information
 
 ARGS:
     <file>    Input file. If not provided, stdin will be used.
+
+SUBCOMMANDS:
+    help        Prints this message or the help of the given subcommand(s)
+    serial      
+    spi         
+    spif        
+    wizfi310
 ```
 ## How to use :
 
-`spif-parser trace_sample_on_change.bin | rg -v '(StatusRegister|WriteEnable)' | less`
+`ltp trace_sample_on_change.bin | rg -v '(StatusRegister|WriteEnable)' | less`

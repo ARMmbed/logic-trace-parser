@@ -1,5 +1,5 @@
 [package]
-name = "logic-trace-analizer"
+name = "logic-trace-parser"
 version = "0.1.1"
 authors = ["Wilfried Chauveau <wilfried.chauveau@arm.com>"]
 edition = "2018"

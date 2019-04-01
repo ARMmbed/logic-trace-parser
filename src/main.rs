@@ -12,6 +12,7 @@ mod serial;
 mod spi;
 mod spif;
 mod vcd_parser;
+mod wizfi310;
 
 use std::io::{stdin, Read};
 
@@ -25,6 +26,7 @@ fn main() {
         .subcommand(spi::subcommand())
         .subcommand(spif::subcommand())
         .subcommand(serial::subcommand())
+        .subcommand(wizfi310::subcommand())
         .args(&[
             Arg::from_usage("-f, --freq [freq] 'Sample frequency (only used on binary input)'")
                 .default_value("1.")
@@ -53,6 +55,7 @@ fn main() {
         ("spif", Some(matches)) => spif::Spif::new(input, &matches, 0).for_each(|_| {}),
         ("spi", Some(matches)) => spi::Spi::new(input, &matches, 0).for_each(|_| {}),
         ("serial", Some(matches)) => serial::Serial::new(input, &matches, 0).for_each(|_| {}),
+        ("wizfi310", Some(matches)) => wizfi310::Wizfi310::new(input, &matches, 0).for_each(|_| {}),
         _ => sample::SampleIterator::new(input, &matches, 0).for_each(|_| {}),
     }
 }
