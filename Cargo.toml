@@ -3,6 +3,12 @@ name = "logic-trace-parser"
 version = "0.1.1"
 authors = ["Wilfried Chauveau <wilfried.chauveau@arm.com>"]
 edition = "2018"
+license = "Apache-2.0"
+
+[badges]
+is-it-maintained-issue-resolution = { repository = "https://github.com/ithinuel/logic-trace-parser" }
+is-it-maintained-open-issues = { repository = "https://github.com/ithinuel/logic-trace-parser" }
+maintenance = { status = "experimental" }
 
 [dependencies]
 nom = "4.2.0"
